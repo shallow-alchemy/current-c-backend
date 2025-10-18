@@ -1,16 +1,9 @@
-use axum::{
-    extract::{ Path, State},
-    http::StatusCode,
-    routing::{ get },
-    Json, Router
-};
-
-use serde::{ Serialize, Deserialize};
-use serde_json::json;
-
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{postgres::PgPoolOptions};
 use tokio::net::TcpListener;
 
+mod handlers;
+mod models;
+mod create_app;
 
 #[tokio::main]
 async fn main() {
@@ -31,156 +24,52 @@ async fn main() {
 
     println!("listening on {}", listener.local_addr().unwrap());
 
-    let app = Router::new()
-        .route("/", get(|| async { "Hello world!"}))
-        .route("/trades", get(get_trades).post(create_trade))
-        .route("/trades/:trade_id", get(get_trade_by_id).patch(edit_trade).delete(delete_trade))
-        .with_state(db_pool);
+    let app = create_app::routes(db_pool);
 
     axum::serve(listener, app).await.expect("Error serving application");
 }
 
-#[derive(Serialize)]
-struct TradeRow {
-    trade_id: i32,
-    symbol: String
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::PgPool;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+    use http_body_util::BodyExt;
 
-async fn get_trades(
-    State(pg_pool): State<PgPool>
-) -> Result<(StatusCode, String), (StatusCode, String)> {
-    let rows = sqlx::query_as!(TradeRow, "SELECT * FROM trades ORDER BY trade_id")
-    .fetch_all(&pg_pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "success": false, "message": e.to_string()}).to_string(),
-        )
-    })?;
+    async fn setup_test_db() -> PgPool {
+        dotenvy::dotenv().ok();
+        let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set for tests");
 
-    Ok((
-        StatusCode::OK,
-        json!({ "success": true, "data": rows }).to_string()
-    ))
-}
-
-#[derive(Deserialize)]
-struct GetTradeByIdReq {
-    trade_id: i32
-}
-
-
-async fn get_trade_by_id(
-    State(pg_pool): State<PgPool>,
-    Path(trade_id_str): Path<String>
-) -> Result<(StatusCode, String), (StatusCode, String)> {
-    println!("hello there");
-    match trade_id_str.parse::<i32>() {
-        Err(_) => {
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "success": false, "message": format!("Invalid Trade Id: {}. Must be an integer.", trade_id_str)}).to_string()
-            ))
-        }
-        
-        Ok(trade_id_int) => {
-            let trades = sqlx::query_as!(
-                TradeRow,
-                "SELECT * FROM trades WHERE trade_id = $1",
-                trade_id_int
-            )
-            .fetch_all(&pg_pool)
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "success": false, "message": e.to_string() }).to_string(),
-                )
-            })?;
-        
-            Ok((
-                StatusCode::OK,
-                json!({ "success": true, "data": trades }).to_string()
-            ))
-        }
+            .expect("Failed to connect to db")
     }
-}
 
-#[derive(Deserialize)]
-struct CreateTradeReq {
-    symbol: String
-}
+    #[tokio::test]
+    async fn get_trades() {
+        let pool = setup_test_db().await;
+        let app = create_app::routes(pool);
 
-#[derive(Serialize)]
-struct CreateTradeRow {
-    trade_id: i32,
-}
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/trades")
+                    .body(Body::empty())
+                    .unwrap()
+            )
+            .await
+            .unwrap();
 
-async fn create_trade(
-    State(pg_pool): State<PgPool>,
-    Json(trade): Json<CreateTradeReq>
-) -> Result<(StatusCode, String), (StatusCode, String)> {
-    println!("hello there again");
-    let row = sqlx::query_as!(
-        CreateTradeRow,
-        "INSERT INTO trades (symbol) VALUES ($1) RETURNING trade_id",
-        trade.symbol
-    )
-    .fetch_one(&pg_pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode:: INTERNAL_SERVER_ERROR,
-            json!({ "success": false, "message": e.to_string() }).to_string(),
-        )
-    })?;
+        assert_eq!(response.status(), StatusCode::OK);
 
-    Ok((StatusCode::CREATED,
-    json!({ "success": true, "data": row }).to_string()
-    ))
-}
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body_str = std::str::from_utf8(&body).unwrap();
 
-#[derive(Deserialize)]
-struct EditTradeReq {
-    symbol: Option<String>
-}
-
-async fn edit_trade(
-    State(pg_pool): State<PgPool>,
-    Path(trade_id): Path<i32>,
-    Json(trade): Json<EditTradeReq>
-) -> Result<(StatusCode, String), (StatusCode, String)> {
-    sqlx::query!(
-        "UPDATE trades SET symbol = $2 WHERE trade_id = $1",
-        trade_id,
-        trade.symbol
-    )
-    .execute(&pg_pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "success": false, "message": e.to_string() }).to_string(),
-        )
-    })?;
-
-    Ok(( StatusCode::OK, json!({ "success": true}).to_string() ))
-}
-
-async fn delete_trade(
-    State(pg_pool): State<PgPool>,
-    Path(trade_id): Path<i32>
-) -> Result<(StatusCode, String), (StatusCode, String)> {
-    sqlx::query!("DELETE FROM trades WHERE trade_id = $1", trade_id)
-    .execute(&pg_pool)
-    .await
-    .map_err(|e|{
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "success": false, "message": e.to_string()}).to_string()
-        )
-    })?;
-
-    Ok(( StatusCode::OK, json!({ "success": true}).to_string() ))
+        assert!(body_str.contains("success"));
+    }
 }
