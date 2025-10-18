@@ -14,7 +14,10 @@ use crate::models::{
 pub async fn get(
     State(pg_pool): State<PgPool>
 ) -> Result<(StatusCode, String), (StatusCode, String)> {
-    let rows = sqlx::query_as!(TradeRow, "SELECT * FROM trades ORDER BY trade_id")
+    let rows = sqlx::query_as!(
+        TradeRow,
+        "SELECT * FROM trades ORDER BY trade_id"
+    )
     .fetch_all(&pg_pool)
     .await
     .map_err(|e| {
