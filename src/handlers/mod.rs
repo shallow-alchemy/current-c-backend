@@ -1,1 +1,1 @@
-pub mod trades;
+pub (crate) mod trades;

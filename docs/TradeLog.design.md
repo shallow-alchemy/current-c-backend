@@ -54,7 +54,7 @@ CREATE TABLE position_trades (
 
 ### Trades
 ```
-POST   /api/trades              # Create new trade
+POST   /api/trades              # Create new trade 
 GET    /api/trades              # List all trades (with pagination/filters)
 GET    /api/trades/{id}         # Get specific trade
 GET    /api/trades/{id}/positions # Get all positions affected by this trade

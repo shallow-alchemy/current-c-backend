@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{ Path, State },
     http::StatusCode, Json,
 };
 use serde_json::json;
@@ -7,9 +7,9 @@ use sqlx::PgPool;
 use crate::models::{
     TradeRow,
     CreateTradeReq,
-    CreateTradeRow,
     EditTradeReq
 };
+use crate::services::{ positions, api };
 
 pub async fn get(
     State(pg_pool): State<PgPool>
@@ -20,12 +20,7 @@ pub async fn get(
     )
     .fetch_all(&pg_pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "success": false, "message": e.to_string()}).to_string(),
-        )
-    })?;
+    .map_err(api::endpoint_error)?;
 
     Ok((
         StatusCode::OK,
@@ -53,13 +48,8 @@ pub async fn get_by_id(
             )
             .fetch_all(&pg_pool)
             .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "success": false, "message": e.to_string() }).to_string(),
-                )
-            })?;
-        
+            .map_err(api::endpoint_error)?;
+
             Ok((
                 StatusCode::OK,
                 json!({ "success": true, "data": trades }).to_string()
@@ -73,9 +63,31 @@ pub async fn create(
     Json(trade): Json<CreateTradeReq>
 ) -> Result<(StatusCode, String), (StatusCode, String)> {
     let row = sqlx::query_as!(
-        CreateTradeRow,
-        "INSERT INTO trades (symbol) VALUES ($1) RETURNING trade_id",
-        trade.symbol
+        TradeRow,
+        r#"
+        INSERT INTO trades (
+            symbol,
+            account_balance,
+            trade_type,
+            price,
+            quantity,
+            pip_price,
+            spread,
+            trade_time,
+            notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING trade_id, symbol, account_balance, trade_type, price, quantity, pip_price, spread, trade_time, notes
+        "#,
+        trade.symbol,
+        trade.account_balance,
+        trade.trade_type,
+        trade.price,
+        trade.quantity,
+        trade.pip_price,
+        trade.spread,
+        trade.trade_time,
+        trade.notes
     )
     .fetch_one(&pg_pool)
     .await
@@ -85,9 +97,13 @@ pub async fn create(
             json!({ "success": false, "message": e.to_string() }).to_string(),
         )
     })?;
+    positions::update_positions(&pg_pool, &row)
+    .await
+    .map_err(api::endpoint_error)?;
 
-    Ok((StatusCode::CREATED,
-    json!({ "success": true, "data": row }).to_string()
+    Ok((
+        StatusCode::CREATED,
+        json!({ "success": true, "data": row }).to_string()
     ))
 }
 
@@ -103,12 +119,7 @@ pub async fn edit(
     )
     .execute(&pg_pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "success": false, "message": e.to_string() }).to_string(),
-        )
-    })?;
+    .map_err(api::endpoint_error)?;
 
     Ok(( StatusCode::OK, json!({ "success": true}).to_string() ))
 }
@@ -120,12 +131,7 @@ pub async fn delete(
     sqlx::query!("DELETE FROM trades WHERE trade_id = $1", trade_id)
     .execute(&pg_pool)
     .await
-    .map_err(|e|{
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "success": false, "message": e.to_string()}).to_string()
-        )
-    })?;
+    .map_err(api::endpoint_error)?;
 
     Ok(( StatusCode::OK, json!({ "success": true}).to_string() ))
 }
